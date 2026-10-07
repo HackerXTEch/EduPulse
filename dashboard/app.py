@@ -19,9 +19,8 @@ st.markdown("""
 <style>
     /* Reduce top padding for full screen layout */
     .block-container { padding-top: 2rem !important; padding-bottom: 2rem !important; }
-    /* Hide Streamlit Toolbar to prevent top-right title overlap */
-    [data-testid="stToolbar"] { visibility: hidden !important; }
-    header { visibility: hidden !important; }
+    /* Style header instead of hiding completely so the sidebar toggle arrow remains accessible */
+    header[data-testid="stHeader"] { background: transparent !important; }
 
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
@@ -365,9 +364,25 @@ def render_artifact_panel(data, gpa, att, mid, logins, study, miss, payload):
     render_whatif_simulator(data, att, study, payload)
 
 def render_main_assistant():
+    run_analysis = go_btn
     col_chat = st.container()
 
     with col_chat:
+        if not st.session_state.messages:
+            st.markdown("""
+            <div class="card card-accent-amber" style="margin-top: 15px;">
+                <p class="t-overline">Welcome to EduPulse</p>
+                <h3 style="margin-top:0;">Ready for Student Risk & Intervention Analysis</h3>
+                <p class="t-body">
+                    Adjust student demographics, academic metrics, and engagement stats in the <strong>left sidebar</strong>, then click <strong>Run Analysis</strong>.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            col_b1, col_b2 = st.columns([1, 4])
+            with col_b1:
+                if st.button("🚀 Run Sample Analysis", type="primary", use_container_width=True):
+                    run_analysis = True
+
         for msg_idx, msg in enumerate(st.session_state.messages):
             with st.chat_message(msg["role"]):
                 if msg.get("type") == "risk_report":
@@ -384,37 +399,46 @@ def render_main_assistant():
                     if "artifact_data" in st.session_state and st.session_state.artifact_data:
                         if "reasoning" not in st.session_state.artifact_data:
                             with st.spinner("Agent is drafting the detailed plan..."):
-                                import requests
-                                r_llm = requests.post(f"{API_BASE}/predict/analyze", json=payload)
-                                if r_llm.status_code == 200:
-                                    llm_data = r_llm.json()
-                                    st.session_state.artifact_data["reasoning"] = llm_data["reasoning"]
-                                    st.session_state.artifact_data["intervention"] = llm_data["intervention"]
-                                    st.rerun()
+                                try:
+                                    r_llm = requests.post(f"{API_BASE}/predict/analyze", json=payload, timeout=20)
+                                    if r_llm.status_code == 200:
+                                        llm_data = r_llm.json()
+                                        st.session_state.artifact_data["reasoning"] = llm_data["reasoning"]
+                                        st.session_state.artifact_data["intervention"] = llm_data["intervention"]
+                                        st.rerun()
+                                    else:
+                                        st.error(f"API Error ({r_llm.status_code}): {r_llm.text}")
+                                except Exception as e:
+                                    st.error(f"Could not connect to FastAPI server at {API_BASE}: {e}")
                         with st.container(border=True):
                             render_artifact_panel(st.session_state.artifact_data, gpa, att, mid, logins, study, miss, payload)
                 else:
                     st.markdown(msg["content"])
 
-        if go_btn:
-            import requests, uuid
-            r = requests.post(f"{API_BASE}/predict/dropout", json=payload)
-            if r.status_code == 200:
-                d = r.json()
-                d["id"] = str(uuid.uuid4())
-                st.session_state.current_dropout_prob = d["dropout_probability"]
-                if "artifact_data" not in st.session_state:
-                    st.session_state.artifact_data = {}
-                st.session_state.artifact_data.update(d)
-                
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "type": "risk_report",
-                    "data": d,
-                    "content": "*The student's profile has been analyzed.*",
-                    "id": d["id"]
-                })
-                st.rerun()
+        if run_analysis:
+            import uuid
+            try:
+                r = requests.post(f"{API_BASE}/predict/dropout", json=payload, timeout=10)
+                if r.status_code == 200:
+                    d = r.json()
+                    d["id"] = str(uuid.uuid4())
+                    st.session_state.current_dropout_prob = d["dropout_probability"]
+                    if "artifact_data" not in st.session_state:
+                        st.session_state.artifact_data = {}
+                    st.session_state.artifact_data.update(d)
+                    
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "type": "risk_report",
+                        "data": d,
+                        "content": "*The student's profile has been analyzed.*",
+                        "id": d["id"]
+                    })
+                    st.rerun()
+                else:
+                    st.error(f"FastAPI Server returned status {r.status_code}: {r.text}")
+            except requests.exceptions.ConnectionError:
+                st.error(f"⚠️ Cannot connect to backend server at `{API_BASE}`. Please ensure FastAPI is running with: `python -m uvicorn api.main:app --port 8000`")
 
 def render_model_comparison():
 
